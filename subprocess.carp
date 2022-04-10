@@ -1,8 +1,5 @@
 (system-include "unistd.h")
 
-(Debug.sanitize-addresses)
-; (Project.config "echo-compiler-cmd" true)
-
 (deftype SubProcess [out String err String exit-code Int])
 
 (defmodule SubProcess
@@ -10,7 +7,7 @@
   (register close (Fn [Int] ()) "close")
   (register execvp (Fn [(Ptr CChar) (Ptr (Ptr CChar))] Int) "execvp")
   (register wait (Fn [(Ptr Int)] ()) "wait")
-  (register read (Fn [Int (Ptr CChar) Int] Int) "read")
+  (register read (Fn [Int (Ptr Byte) Int] Int) "read")
   (register dup2 (Fn [Int Int] Int) "dup2")
   (register pipe (Fn [(Ptr Int)] ()) "pipe")
   (deftemplate exit-status (Fn [Int] Int) "int $NAME(int status)" "$DECL { return WEXITSTATUS(status); }")
@@ -42,7 +39,7 @@
         (when err-continue
           (do
             (set! err-byte-read (read @(StaticArray.unsafe-nth errfd 0)
-                                      (Unsafe.coerce (Pointer.address &err-current-char))
+                                      (Pointer.address &err-current-char)
                                       buff-size))
             (if (> err-byte-read 0)
               (Array.push-back! &err-buff err-current-char)
@@ -51,7 +48,7 @@
         (when out-continue
           (do
             (set! out-byte-read (read @(StaticArray.unsafe-nth fd 0)
-                                      (Unsafe.coerce (Pointer.address &out-current-char))
+                                      (Pointer.address &out-current-char)
                                       buff-size))
             (if (> out-byte-read 0)
               (Array.push-back! &out-buff out-current-char)

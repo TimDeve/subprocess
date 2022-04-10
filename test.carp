@@ -2,6 +2,8 @@
 
 (load "./subprocess.carp")
 
+(Debug.sanitize-addresses)
+
 (def res (SubProcess.cmd &[@"sh" @"-c" @"printf 'this is stderr' 1>&2; printf 'this is stdout'; exit 42"]))
 
 (deftest test
