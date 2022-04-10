@@ -1,6 +1,18 @@
 (system-include "unistd.h")
 
-(deftype SubProcess [out String err String exit-code Int])
+(deftype SubProcessOutMode Std Pipe)
+(deftype SubProcessErrMode Std Pipe Combine)
+
+(deftype SubProcessOptions [out SubProcessOutMode err SubProcessErrMode])
+(defmodule SubProcessOptions
+  (defn std [] (SubProcessOptions (SubProcessOutMode.Std) (SubProcessErrMode.Std)))
+  (defn pipe-combine [] (SubProcessOptions (SubProcessOutMode.Pipe) (SubProcessErrMode.Combine)))
+  (defn pipe [] (SubProcessOptions (SubProcessOutMode.Pipe) (SubProcessErrMode.Pipe)))
+
+  (defn zero [] (std))
+  (implements zero zero))
+
+(deftype SubProcess [out (Maybe String) err (Maybe String) exit-code Int])
 
 (defmodule SubProcess
   (register fork (Fn [] Int) "fork")
@@ -12,15 +24,27 @@
   (register pipe (Fn [(Ptr Int)] ()) "pipe")
   (deftemplate exit-status (Fn [Int] Int) "int $NAME(int status)" "$DECL { return WEXITSTATUS(status); }")
 
-  (defn-do child-process [args fd errfd]
-    (close @(StaticArray.unsafe-nth fd 0))
-    (close @(StaticArray.unsafe-nth errfd 0))
-    (ignore (dup2 @(StaticArray.unsafe-nth fd 1) 1))
-    (ignore (dup2 @(StaticArray.unsafe-nth errfd 1) 2))
+  (defn-do child-process [args fd errfd options]
+    (match-ref (SubProcessOptions.out options)
+      Pipe
+      (do (close @(StaticArray.unsafe-nth fd 0))
+          (ignore (dup2 @(StaticArray.unsafe-nth fd 1) 1)))
+      _ ())
+
+    (match-ref (SubProcessOptions.err options)
+      Pipe
+      (do (close @(StaticArray.unsafe-nth errfd 0))
+          (ignore (dup2 @(StaticArray.unsafe-nth errfd 1) 2)))
+      Combine
+      (match-ref (SubProcessOptions.out options)
+        Pipe (ignore (dup2 @(StaticArray.unsafe-nth fd 1) 2))
+        Std  (ignore (dup2 1 2)))
+      _ ())
+
     (ignore (execvp (Array.unsafe-nth-value args 0) (Array.unsafe-raw args)))
     (exit 1))
 
-  (defn-do parent-process [fd errfd]
+  (defn-do parent-process [fd errfd options]
     (let-do [out-continue true
              err-continue true
              buff-size 1 ; One byte at a time
@@ -30,52 +54,74 @@
              err-current-char (the Byte (zero))
              out-byte-read 0
              err-byte-read 0
-             status 0]
+             status -1]
 
-      (close @(StaticArray.unsafe-nth fd 1))
-      (close @(StaticArray.unsafe-nth errfd 1))
+      (match-ref (SubProcessOptions.out options)
+        Pipe (close @(StaticArray.unsafe-nth fd 1)) 
+        _ ())
+
+      (match-ref (SubProcessOptions.err options)
+        Pipe (close @(StaticArray.unsafe-nth errfd 1))
+        _ ())
 
       (while-do (or out-continue err-continue)
-        (when err-continue
-          (do
-            (set! err-byte-read (read @(StaticArray.unsafe-nth errfd 0)
-                                      (Pointer.address &err-current-char)
-                                      buff-size))
-            (if (> err-byte-read 0)
-              (Array.push-back! &err-buff err-current-char)
-              (set! err-continue false))))
 
         (when out-continue
-          (do
-            (set! out-byte-read (read @(StaticArray.unsafe-nth fd 0)
-                                      (Pointer.address &out-current-char)
-                                      buff-size))
-            (if (> out-byte-read 0)
-              (Array.push-back! &out-buff out-current-char)
-              (set! out-continue false)))))
+          (match-ref (SubProcessOptions.out options)
+            Pipe
+            (do
+              (set! out-byte-read (read @(StaticArray.unsafe-nth fd 0)
+                                        (Pointer.address &out-current-char)
+                                        buff-size))
+              (if (> out-byte-read 0)
+                (Array.push-back! &out-buff out-current-char)
+                (set! out-continue false)))
+            _ (set! out-continue false)))
+
+        (when err-continue
+          (match-ref (SubProcessOptions.err options)
+            Pipe
+            (do
+              (set! err-byte-read (read @(StaticArray.unsafe-nth errfd 0)
+                                        (Pointer.address &err-current-char)
+                                        buff-size))
+              (if (> err-byte-read 0)
+                (Array.push-back! &err-buff err-current-char)
+                (set! err-continue false)))
+            _ (set! err-continue false))))
 
       (wait (Pointer.address &status))
       (init
-       (String.from-bytes &out-buff)
-       (String.from-bytes &err-buff)
+       (match-ref (SubProcessOptions.out options)
+         Pipe (Just (String.from-bytes &out-buff))
+         _ (Nothing))
+       (match-ref (SubProcessOptions.err options)
+         Pipe (Just (String.from-bytes &err-buff))
+         _ (Nothing))
        (exit-status status))))
 
-  (defn fork-and-process [args]
+  (defn fork-and-process [args options]
     (let-do [fd $[-1 -1]
              errfd $[-1 -1]
              pid -1]
-       (pipe (StaticArray.unsafe-raw fd))
-       (pipe (StaticArray.unsafe-raw errfd))
+       (match-ref (SubProcessOptions.out options)
+         Pipe (pipe (StaticArray.unsafe-raw fd))
+         _ ())
+
+       (match-ref (SubProcessOptions.err options)
+         Pipe (pipe (StaticArray.unsafe-raw errfd))
+         _ ())
+
        (set! pid (fork))
        (cond (< pid 0) (do (println* "Fail") (exit 1))
-             (= pid 0) (child-process args fd errfd)
-             (parent-process fd errfd))))
+             (= pid 0) (child-process args fd errfd options)
+             (parent-process fd errfd options))))
 
-  (defn cmd [args]
+  (defn cmd [options args]
     (let-do [len (Array.length args)
              c-args (Array.allocate (inc len))]
       (for [i 0 len]
         (Array.aset-uninitialized! &c-args i (cstr (Array.unsafe-nth args i))))
       (Array.aset-uninitialized! &c-args (dec (Array.length &c-args)) NULL)
-      (fork-and-process &c-args))))
+      (fork-and-process &c-args &options))))
 
