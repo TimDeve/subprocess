@@ -1,0 +1,84 @@
+(system-include "unistd.h")
+
+(Debug.sanitize-addresses)
+; (Project.config "echo-compiler-cmd" true)
+
+(deftype SubProcess [out String err String exit-code Int])
+
+(defmodule SubProcess
+  (register fork (Fn [] Int) "fork")
+  (register close (Fn [Int] ()) "close")
+  (register execvp (Fn [(Ptr CChar) (Ptr (Ptr CChar))] Int) "execvp")
+  (register wait (Fn [(Ptr Int)] ()) "wait")
+  (register read (Fn [Int (Ptr CChar) Int] Int) "read")
+  (register dup2 (Fn [Int Int] Int) "dup2")
+  (register pipe (Fn [(Ptr Int)] ()) "pipe")
+  (deftemplate exit-status (Fn [Int] Int) "int $NAME(int status)" "$DECL { return WEXITSTATUS(status); }")
+
+  (defn-do child-process [args fd errfd]
+    (close @(StaticArray.unsafe-nth fd 0))
+    (close @(StaticArray.unsafe-nth errfd 0))
+    (ignore (dup2 @(StaticArray.unsafe-nth fd 1) 1))
+    (ignore (dup2 @(StaticArray.unsafe-nth errfd 1) 2))
+    (ignore (execvp (Array.unsafe-nth-value args 0) (Array.unsafe-raw args)))
+    (exit 1))
+
+  (defn-do parent-process [fd errfd]
+    (let-do [out-continue true
+             err-continue true
+             buff-size 1 ; One byte at a time
+             out-buff (the (Array Byte) [])
+             err-buff (the (Array Byte) [])
+             out-current-char (the Byte (zero))
+             err-current-char (the Byte (zero))
+             out-byte-read 0
+             err-byte-read 0
+             status 0]
+
+      (close @(StaticArray.unsafe-nth fd 1))
+      (close @(StaticArray.unsafe-nth errfd 1))
+
+      (while-do (or out-continue err-continue)
+        (when err-continue
+          (do
+            (set! err-byte-read (read @(StaticArray.unsafe-nth errfd 0)
+                                      (Unsafe.coerce (Pointer.address &err-current-char))
+                                      buff-size))
+            (if (> err-byte-read 0)
+              (Array.push-back! &err-buff err-current-char)
+              (set! err-continue false))))
+
+        (when out-continue
+          (do
+            (set! out-byte-read (read @(StaticArray.unsafe-nth fd 0)
+                                      (Unsafe.coerce (Pointer.address &out-current-char))
+                                      buff-size))
+            (if (> out-byte-read 0)
+              (Array.push-back! &out-buff out-current-char)
+              (set! out-continue false)))))
+
+      (wait (Pointer.address &status))
+      (init
+       (String.from-bytes &out-buff)
+       (String.from-bytes &err-buff)
+       (exit-status status))))
+
+  (defn fork-and-process [args]
+    (let-do [fd $[-1 -1]
+             errfd $[-1 -1]
+             pid -1]
+       (pipe (StaticArray.unsafe-raw fd))
+       (pipe (StaticArray.unsafe-raw errfd))
+       (set! pid (fork))
+       (cond (< pid 0) (do (println* "Fail") (exit 1))
+             (= pid 0) (child-process args fd errfd)
+             (parent-process fd errfd))))
+
+  (defn cmd [args]
+    (let-do [len (Array.length args)
+             c-args (Array.allocate (inc len))]
+      (for [i 0 len]
+        (Array.aset-uninitialized! &c-args i (cstr (Array.unsafe-nth args i))))
+      (Array.aset-uninitialized! &c-args (dec (Array.length &c-args)) NULL)
+      (fork-and-process &c-args))))
+
