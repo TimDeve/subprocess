@@ -1,5 +1,22 @@
 (system-include "unistd.h")
 
+(relative-include "./subprocess.h")
+
+(register-type SubProcessPipe "CarpSubprocess_Pipe")
+
+(defmodule SubProcessPipe
+  (register init (Fn [] SubProcessPipe) "CarpSubprocess_PipeInit")
+  (register input (Fn [(Ref SubProcessPipe)] Int) "CarpSubprocess_PipeInput")
+  (register output (Fn [(Ref SubProcessPipe)] Int) "CarpSubprocess_PipeOutput")
+
+  (register copy (Fn [(Ref SubProcessPipe)] SubProcessPipe) "CarpSubprocess_PipeCopy")
+  (implements copy copy)
+
+  (defn str [p] (do (ignore (the (Ref SubProcessPipe) p)) @"SubProcessPipe"))
+  (implements str str)
+  (defn prn [p] (do (ignore (the (Ref SubProcessPipe) p)) @"SubProcessPipe"))
+  (implements prn prn))
+
 (deftype SubProcessOutMode Std Pipe)
 (deftype SubProcessErrMode Std Pipe Combine)
 
@@ -27,27 +44,27 @@
   (defn-do child-process [args fd errfd options]
     (match-ref (SubProcessOptions.out options)
       Pipe
-      (do (close @(StaticArray.unsafe-nth fd 0))
-          (ignore (dup2 @(StaticArray.unsafe-nth fd 1) 1)))
+      (do (close (SubProcessPipe.output fd))
+          (ignore (dup2 (SubProcessPipe.input fd) 1)))
       _ ())
 
     (match-ref (SubProcessOptions.err options)
       Pipe
-      (do (close @(StaticArray.unsafe-nth errfd 0))
-          (ignore (dup2 @(StaticArray.unsafe-nth errfd 1) 2)))
+      (do (close (SubProcessPipe.output errfd))
+          (ignore (dup2 (SubProcessPipe.input errfd) 2)))
       Combine
       (match-ref (SubProcessOptions.out options)
-        Pipe (ignore (dup2 @(StaticArray.unsafe-nth fd 1) 2))
+        Pipe (ignore (dup2 (SubProcessPipe.input fd) 2))
         Std  (ignore (dup2 1 2)))
       _ ())
 
-    (ignore (execvp (Array.unsafe-nth-value args 0) (Array.unsafe-raw args)))
+    (ignore (execvp (Array.unsafe-nth-value args 0) (Array.unsafe-raw args))) ; TODO: Deal with the fact that there might not be a first value in array
     (exit 1))
 
-  (defn-do parent-process [fd errfd options]
+  (defn-do parent-process [out-pipe err-pipe options]
     (let-do [out-continue true
              err-continue true
-             buff-size 1 ; One byte at a time
+             buff-size 1 ; One byte at a time TODO: buffer this
              out-buff (the (Array Byte) [])
              err-buff (the (Array Byte) [])
              out-current-char (the Byte (zero))
@@ -57,11 +74,11 @@
              status -1]
 
       (match-ref (SubProcessOptions.out options)
-        Pipe (close @(StaticArray.unsafe-nth fd 1)) 
+        Pipe (close (SubProcessPipe.input out-pipe))
         _ ())
 
       (match-ref (SubProcessOptions.err options)
-        Pipe (close @(StaticArray.unsafe-nth errfd 1))
+        Pipe (close (SubProcessPipe.input err-pipe))
         _ ())
 
       (while-do (or out-continue err-continue)
@@ -70,7 +87,7 @@
           (match-ref (SubProcessOptions.out options)
             Pipe
             (do
-              (set! out-byte-read (read @(StaticArray.unsafe-nth fd 0)
+              (set! out-byte-read (read (SubProcessPipe.output out-pipe)
                                         (Pointer.address &out-current-char)
                                         buff-size))
               (if (> out-byte-read 0)
@@ -82,7 +99,7 @@
           (match-ref (SubProcessOptions.err options)
             Pipe
             (do
-              (set! err-byte-read (read @(StaticArray.unsafe-nth errfd 0)
+              (set! err-byte-read (read (SubProcessPipe.output err-pipe)
                                         (Pointer.address &err-current-char)
                                         buff-size))
               (if (> err-byte-read 0)
@@ -101,21 +118,14 @@
        (exit-status status))))
 
   (defn fork-and-process [args options]
-    (let-do [fd $[-1 -1]
-             errfd $[-1 -1]
+    (let-do [out-pipe &(SubProcessPipe.init)
+             err-pipe &(SubProcessPipe.init)
              pid -1]
-       (match-ref (SubProcessOptions.out options)
-         Pipe (pipe (StaticArray.unsafe-raw fd))
-         _ ())
-
-       (match-ref (SubProcessOptions.err options)
-         Pipe (pipe (StaticArray.unsafe-raw errfd))
-         _ ())
 
        (set! pid (fork))
        (cond (< pid 0) (do (println* "Fail") (exit 1))
-             (= pid 0) (child-process args fd errfd options)
-             (parent-process fd errfd options))))
+             (= pid 0) (child-process args out-pipe err-pipe options)
+             (parent-process out-pipe err-pipe options))))
 
   (defn cmd [options args]
     (let-do [len (Array.length args)
