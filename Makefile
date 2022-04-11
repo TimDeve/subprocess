@@ -1,5 +1,5 @@
 .PHONY=all
-all: build test
+all: test build build-example
 
 .PHONY=test
 test:
@@ -8,3 +8,7 @@ test:
 .PHONY=build
 build:
 	carp -b subprocess.carp
+
+.PHONY=build-example
+build-example:
+	carp -b example.carp
