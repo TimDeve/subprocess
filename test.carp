@@ -4,69 +4,68 @@
 
 (Debug.sanitize-addresses)
 
-(def pipe-all (SubProcess.cmd (SubProcessOptions.pipe)
-                              &[@"sh" @"-c" @"echo 'this is stderr' 1>&2; echo 'this is stdout'; exit 42"]))
+(defn test-args []
+  [@"sh" @"-c" @"echo 'this is stderr' 1>&2; echo 'this is stdout'; exit 42"])
 
-(def print-all (SubProcess.cmd (SubProcessOptions.std)
-                               &[@"sh" @"-c" @"echo 'this is stderr' 1>&2; echo 'this is stdout'; exit 42"]))
+(def pipe-all (Subprocess.cmd (SubprocessOptions.pipe) &(test-args)))
 
-(def fold-err-into-out
-     (SubProcess.cmd (SubProcessOptions.pipe-combine)
-                     &[@"sh" @"-c" @"echo 'this is stderr' 1>&2; echo 'this is stdout'; exit 42"]))
+(def print-all (Subprocess.cmd (SubprocessOptions.std) &(test-args)))
+
+(def fold-err-into-out (Subprocess.cmd (SubprocessOptions.pipe-combine) &(test-args)))
 
 (def fold-err-into-out-large
-     (SubProcess.cmd (SubProcessOptions.pipe-combine)
+     (Subprocess.cmd (SubprocessOptions.pipe-combine)
                      &[@"printf" (String.repeat 10000 "wow")]))
 
 (deftest test
   (assert-equal test
                 &(Just @"this is stdout\n")
-                (SubProcess.out &pipe-all)
+                (SubprocessRes.out &pipe-all)
                 "pipe - out works with small output")
   (assert-equal test
                 &(Just @"this is stderr\n")
-                (SubProcess.err &pipe-all)
+                (SubprocessRes.err &pipe-all)
                 "pipe - err works with small output")
   (assert-equal test
                 &42
-                (SubProcess.exit-code &pipe-all)
+                (SubprocessRes.exit-code &pipe-all)
                 "pipe - exit-code works with small output")
 
   (assert-equal test
                 &(Nothing)
-                (SubProcess.out &print-all)
+                (SubprocessRes.out &print-all)
                 "print - out works with small output")
   (assert-equal test
                 &(Nothing)
-                (SubProcess.err &print-all)
+                (SubprocessRes.err &print-all)
                 "print - err works with small output")
   (assert-equal test
                 &42
-                (SubProcess.exit-code &print-all)
+                (SubprocessRes.exit-code &print-all)
                 "print - exit-code works with small output")
 
   (assert-equal test
                 &(Just @"this is stderr\nthis is stdout\n")
-                (SubProcess.out &fold-err-into-out)
+                (SubprocessRes.out &fold-err-into-out)
                 "combine - out works with small output")
   (assert-equal test
                 &(Nothing)
-                (SubProcess.err &fold-err-into-out)
+                (SubprocessRes.err &fold-err-into-out)
                 "combine - err works with small output")
   (assert-equal test
                 &42
-                (SubProcess.exit-code &fold-err-into-out)
+                (SubprocessRes.exit-code &fold-err-into-out)
                 "combine - exit-code works with small output")
 
   (assert-equal test
                 &(Just (String.repeat 10000 "wow"))
-                (SubProcess.out &fold-err-into-out-large)
-                "combine - out works with small output")
+                (SubprocessRes.out &fold-err-into-out-large)
+                "combine - out works with large output")
   (assert-equal test
                 &(Nothing)
-                (SubProcess.err &fold-err-into-out-large)
-                "combine - err works with small output")
+                (SubprocessRes.err &fold-err-into-out-large)
+                "combine - err works with large output")
   (assert-equal test
                 &0
-                (SubProcess.exit-code &fold-err-into-out-large)
-                "combine - exit-code works with small output"))
+                (SubprocessRes.exit-code &fold-err-into-out-large)
+                "combine - exit-code works with large output"))

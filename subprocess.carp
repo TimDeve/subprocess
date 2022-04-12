@@ -2,36 +2,40 @@
 
 (relative-include "./subprocess.h")
 
-(register-type SubProcessPipe "CarpSubprocess_Pipe")
+(register-type SubprocessPipe "CarpSubprocess_Pipe")
 
-(defmodule SubProcessPipe
-  (register init (Fn [] SubProcessPipe) "CarpSubprocess_PipeInit")
-  (register input (Fn [(Ref SubProcessPipe)] Int) "CarpSubprocess_PipeInput")
-  (register output (Fn [(Ref SubProcessPipe)] Int) "CarpSubprocess_PipeOutput")
+(defmodule SubprocessPipe
+  (register init (Fn [] SubprocessPipe) "CarpSubprocess_PipeInit")
+  (register input (Fn [(Ref SubprocessPipe)] Int) "CarpSubprocess_PipeInput")
+  (register output (Fn [(Ref SubprocessPipe)] Int) "CarpSubprocess_PipeOutput")
 
-  (register copy (Fn [(Ref SubProcessPipe)] SubProcessPipe) "CarpSubprocess_PipeCopy")
+  (register copy (Fn [(Ref SubprocessPipe)] SubprocessPipe) "CarpSubprocess_PipeCopy")
   (implements copy copy)
 
-  (defn str [p] (do (ignore (the (Ref SubProcessPipe) p)) @"SubProcessPipe"))
+  (defn str [p] (do (ignore (the (Ref SubprocessPipe) p)) @"SubprocessPipe"))
   (implements str str)
-  (defn prn [p] (do (ignore (the (Ref SubProcessPipe) p)) @"SubProcessPipe"))
+  (defn ref-prn [p] (do (ignore (the (Ref SubprocessPipe) p)) @"SubprocessPipe"))
+  (implements prn ref-prn)
+  (defn prn [p] (do (ignore (the SubprocessPipe p)) @"SubprocessPipe"))
   (implements prn prn))
 
-(deftype SubProcessOutMode Std Pipe)
-(deftype SubProcessErrMode Std Pipe Combine)
+(deftype SubprocessOutMode Std Pipe)
+(deftype SubprocessErrMode Std Pipe Out)
 
-(deftype SubProcessOptions [out SubProcessOutMode err SubProcessErrMode])
-(defmodule SubProcessOptions
-  (defn std [] (SubProcessOptions (SubProcessOutMode.Std) (SubProcessErrMode.Std)))
-  (defn pipe-combine [] (SubProcessOptions (SubProcessOutMode.Pipe) (SubProcessErrMode.Combine)))
-  (defn pipe [] (SubProcessOptions (SubProcessOutMode.Pipe) (SubProcessErrMode.Pipe)))
+(deftype SubprocessOptions [out SubprocessOutMode err SubprocessErrMode])
+(defmodule SubprocessOptions
+  (defn std [] (SubprocessOptions (SubprocessOutMode.Std) (SubprocessErrMode.Std)))
+  (defn pipe-combine [] (SubprocessOptions (SubprocessOutMode.Pipe) (SubprocessErrMode.Out)))
+  (defn pipe [] (SubprocessOptions (SubprocessOutMode.Pipe) (SubprocessErrMode.Pipe)))
 
   (defn zero [] (std))
   (implements zero zero))
 
-(deftype SubProcess [out (Maybe String) err (Maybe String) exit-code Int])
+(deftype Subprocess [out (Maybe SubprocessPipe) err (Maybe SubprocessPipe)])
 
-(defmodule SubProcess
+(deftype SubprocessRes [out (Maybe String) err (Maybe String) exit-code Int])
+
+(defmodule Subprocess
   (register fork (Fn [] Int) "fork")
   (register close (Fn [Int] ()) "close")
   (register execvp (Fn [(Ptr CChar) (Ptr (Ptr CChar))] Int) "execvp")
@@ -42,26 +46,60 @@
   (deftemplate exit-status (Fn [Int] Int) "int $NAME(int status)" "$DECL { return WEXITSTATUS(status); }")
 
   (defn-do child-process [args fd errfd options]
-    (match-ref (SubProcessOptions.out options)
+    (match-ref (SubprocessOptions.out options)
       Pipe
-      (do (close (SubProcessPipe.output fd))
-          (ignore (dup2 (SubProcessPipe.input fd) 1)))
+      (do (close (SubprocessPipe.output fd))
+          (ignore (dup2 (SubprocessPipe.input fd) 1)))
       _ ())
 
-    (match-ref (SubProcessOptions.err options)
+    (match-ref (SubprocessOptions.err options)
       Pipe
-      (do (close (SubProcessPipe.output errfd))
-          (ignore (dup2 (SubProcessPipe.input errfd) 2)))
-      Combine
-      (match-ref (SubProcessOptions.out options)
-        Pipe (ignore (dup2 (SubProcessPipe.input fd) 2))
+      (do (close (SubprocessPipe.output errfd))
+          (ignore (dup2 (SubprocessPipe.input errfd) 2)))
+      Out
+      (match-ref (SubprocessOptions.out options)
+        Pipe (ignore (dup2 (SubprocessPipe.input fd) 2))
         Std  (ignore (dup2 1 2)))
       _ ())
 
     (ignore (execvp (Array.unsafe-nth-value args 0) (Array.unsafe-raw args))) ; TODO: Deal with the fact that there might not be a first value in array
     (exit 1))
 
-  (defn-do parent-process [out-pipe err-pipe options]
+  (defn parent-process [out-pipe err-pipe options]
+    (let [maybe-out-pipe
+          (match-ref (SubprocessOptions.out options)
+            Pipe (Just out-pipe)
+            _    (Nothing))
+          maybe-err-pipe
+          (match-ref (SubprocessOptions.err options)
+            Pipe (Just err-pipe)
+            Out  (Nothing)
+            _    (Nothing))]
+      (init maybe-out-pipe maybe-err-pipe)))
+
+  (defn fork-and-process [args options]
+    (let-do [out-pipe (SubprocessPipe.init)
+             *out-pipe &out-pipe
+             err-pipe (SubprocessPipe.init)
+             *err-pipe &err-pipe
+             pid -1]
+
+       (set! pid (fork))
+       (cond (< pid 0) (do (println* "Fail") (exit 1))
+             (= pid 0) (child-process args *out-pipe *err-pipe options)
+             (parent-process out-pipe err-pipe options))))
+
+  (sig call (Fn [SubprocessOptions (Ref (Array String))] Subprocess))
+  (defn call [options args]
+    (let-do [len (Array.length args)
+             c-args (Array.allocate (inc len))]
+      (for [i 0 len]
+        (Array.aset-uninitialized! &c-args i (cstr (Array.unsafe-nth args i))))
+      (Array.aset-uninitialized! &c-args (dec (Array.length &c-args)) NULL)
+      (fork-and-process &c-args &options)))
+
+  (sig collect (Fn [Subprocess] SubprocessRes))
+  (defn-do collect [subp]
     (let-do [out-continue true
              err-continue true
              buff-size 1 ; One byte at a time TODO: buffer this
@@ -73,21 +111,21 @@
              err-byte-read 0
              status -1]
 
-      (match-ref (SubProcessOptions.out options)
-        Pipe (close (SubProcessPipe.input out-pipe))
+      (match-ref (Subprocess.out &subp)
+        (Just pipe) (close (SubprocessPipe.input pipe))
         _ ())
 
-      (match-ref (SubProcessOptions.err options)
-        Pipe (close (SubProcessPipe.input err-pipe))
+      (match-ref (Subprocess.err &subp)
+        (Just pipe) (close (SubprocessPipe.input pipe))
         _ ())
 
       (while-do (or out-continue err-continue)
 
         (when out-continue
-          (match-ref (SubProcessOptions.out options)
-            Pipe
+          (match-ref (Subprocess.out &subp)
+            (Just pipe)
             (do
-              (set! out-byte-read (read (SubProcessPipe.output out-pipe)
+              (set! out-byte-read (read (SubprocessPipe.output pipe)
                                         (Pointer.address &out-current-char)
                                         buff-size))
               (if (> out-byte-read 0)
@@ -96,10 +134,10 @@
             _ (set! out-continue false)))
 
         (when err-continue
-          (match-ref (SubProcessOptions.err options)
-            Pipe
+          (match-ref (Subprocess.err &subp)
+            (Just pipe)
             (do
-              (set! err-byte-read (read (SubProcessPipe.output err-pipe)
+              (set! err-byte-read (read (SubprocessPipe.output pipe)
                                         (Pointer.address &err-current-char)
                                         buff-size))
               (if (> err-byte-read 0)
@@ -108,30 +146,15 @@
             _ (set! err-continue false))))
 
       (wait (Pointer.address &status))
-      (init
-       (match-ref (SubProcessOptions.out options)
-         Pipe (Just (String.from-bytes &out-buff))
+      (SubprocessRes.init
+       (match-ref (Subprocess.out &subp)
+         (Just _)  (Just (String.from-bytes &out-buff))
          _ (Nothing))
-       (match-ref (SubProcessOptions.err options)
-         Pipe (Just (String.from-bytes &err-buff))
+       (match-ref (Subprocess.err &subp)
+         (Just _) (Just (String.from-bytes &err-buff))
          _ (Nothing))
        (exit-status status))))
 
-  (defn fork-and-process [args options]
-    (let-do [out-pipe &(SubProcessPipe.init)
-             err-pipe &(SubProcessPipe.init)
-             pid -1]
-
-       (set! pid (fork))
-       (cond (< pid 0) (do (println* "Fail") (exit 1))
-             (= pid 0) (child-process args out-pipe err-pipe options)
-             (parent-process out-pipe err-pipe options))))
-
-  (defn cmd [options args]
-    (let-do [len (Array.length args)
-             c-args (Array.allocate (inc len))]
-      (for [i 0 len]
-        (Array.aset-uninitialized! &c-args i (cstr (Array.unsafe-nth args i))))
-      (Array.aset-uninitialized! &c-args (dec (Array.length &c-args)) NULL)
-      (fork-and-process &c-args &options))))
+  (sig cmd (Fn [SubprocessOptions (Ref (Array String))] SubprocessRes))
+  (defn cmd [opts args] (collect (call opts args))))
 
