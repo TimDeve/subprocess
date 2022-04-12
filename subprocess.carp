@@ -3,7 +3,6 @@
 (relative-include "./subprocess.h")
 
 (register-type SubprocessPipe "CarpSubprocess_Pipe")
-
 (defmodule SubprocessPipe
   (register init (Fn [] SubprocessPipe) "CarpSubprocess_PipeInit")
   (register input (Fn [(Ref SubprocessPipe)] Int) "CarpSubprocess_PipeInput")
@@ -21,7 +20,6 @@
 
 (deftype SubprocessOutMode Std Pipe)
 (deftype SubprocessErrMode Std Pipe Out)
-
 (deftype SubprocessOptions [out SubprocessOutMode err SubprocessErrMode])
 (defmodule SubprocessOptions
   (defn std [] (SubprocessOptions (SubprocessOutMode.Std) (SubprocessErrMode.Std)))
@@ -31,41 +29,49 @@
   (defn zero [] (std))
   (implements zero zero))
 
-(deftype Subprocess [out (Maybe SubprocessPipe) err (Maybe SubprocessPipe)])
-
 (deftype SubprocessRes [out (Maybe String) err (Maybe String) exit-code Int])
 
+(deftype Subprocess [out (Maybe SubprocessPipe) err (Maybe SubprocessPipe)])
 (defmodule Subprocess
+  (private fork) (hidden fork)
   (register fork (Fn [] Int) "fork")
+  (private close) (hidden close)
   (register close (Fn [Int] ()) "close")
+  (private execvp) (hidden execvp)
   (register execvp (Fn [(Ptr CChar) (Ptr (Ptr CChar))] Int) "execvp")
+  (private wait) (hidden wait)
   (register wait (Fn [(Ptr Int)] ()) "wait")
+  (private read) (hidden read)
   (register read (Fn [Int (Ptr Byte) Int] Int) "read")
+  (private dup2) (hidden dup2)
   (register dup2 (Fn [Int Int] Int) "dup2")
+  (private pipe) (hidden pipe)
   (register pipe (Fn [(Ptr Int)] ()) "pipe")
+  (private exit-status) (hidden exit-status)
   (deftemplate exit-status (Fn [Int] Int) "int $NAME(int status)" "$DECL { return WEXITSTATUS(status); }")
 
-  (defn-do child-process [args fd errfd options]
-    (match-ref (SubprocessOptions.out options)
-      Pipe
-      (do (close (SubprocessPipe.output fd))
-          (ignore (dup2 (SubprocessPipe.input fd) 1)))
-      _ ())
+  (defn- child-process [args fd errfd options]
+    (do
+     (match-ref (SubprocessOptions.out options)
+       Pipe
+       (do (close (SubprocessPipe.output fd))
+           (ignore (dup2 (SubprocessPipe.input fd) 1)))
+       _ ())
 
-    (match-ref (SubprocessOptions.err options)
-      Pipe
-      (do (close (SubprocessPipe.output errfd))
-          (ignore (dup2 (SubprocessPipe.input errfd) 2)))
-      Out
-      (match-ref (SubprocessOptions.out options)
-        Pipe (ignore (dup2 (SubprocessPipe.input fd) 2))
-        Std  (ignore (dup2 1 2)))
-      _ ())
+     (match-ref (SubprocessOptions.err options)
+       Pipe
+       (do (close (SubprocessPipe.output errfd))
+           (ignore (dup2 (SubprocessPipe.input errfd) 2)))
+       Out
+       (match-ref (SubprocessOptions.out options)
+         Pipe (ignore (dup2 (SubprocessPipe.input fd) 2))
+         Std  (ignore (dup2 1 2)))
+       _ ())
 
-    (ignore (execvp (Array.unsafe-nth-value args 0) (Array.unsafe-raw args))) ; TODO: Deal with the fact that there might not be a first value in array
-    (exit 1))
+     (ignore (execvp (Array.unsafe-nth-value args 0) (Array.unsafe-raw args))) ; TODO: Deal with the fact that there might not be a first value in array
+     (exit 1))) ; Should not be reached
 
-  (defn parent-process [out-pipe err-pipe options]
+  (defn- parent-process [out-pipe err-pipe options]
     (let [maybe-out-pipe
           (match-ref (SubprocessOptions.out options)
             Pipe (Just out-pipe)
@@ -77,7 +83,7 @@
             _    (Nothing))]
       (init maybe-out-pipe maybe-err-pipe)))
 
-  (defn fork-and-process [args options]
+  (defn- fork-and-process [args options]
     (let-do [out-pipe (SubprocessPipe.init)
              *out-pipe &out-pipe
              err-pipe (SubprocessPipe.init)
