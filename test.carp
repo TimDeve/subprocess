@@ -7,14 +7,14 @@
 (defn test-args []
   [@"sh" @"-c" @"echo 'this is stderr' 1>&2; echo 'this is stdout'; exit 42"])
 
-(def pipe-all (Subprocess.cmd (SubprocessOptions.pipe) &(test-args)))
+(def pipe-all (Subprocess.cmd (SubprocessOptions.spp) &(test-args)))
 
-(def print-all (Subprocess.cmd (SubprocessOptions.std) &(test-args)))
+(def print-all (Subprocess.cmd (SubprocessOptions.sss) &(test-args)))
 
-(def fold-err-into-out (Subprocess.cmd (SubprocessOptions.pipe-combine) &(test-args)))
+(def fold-err-into-out (Subprocess.cmd (SubprocessOptions.spo) &(test-args)))
 
 (def fold-err-into-out-large
-     (Subprocess.cmd (SubprocessOptions.pipe-combine)
+     (Subprocess.cmd (SubprocessOptions.spo)
                      &[@"printf" (String.repeat 10000 "wow")]))
 
 (deftest test
@@ -68,4 +68,17 @@
   (assert-equal test
                 &0
                 (SubprocessRes.exit-code &fold-err-into-out-large)
-                "combine - exit-code works with large output"))
+                "combine - exit-code works with large output")
+
+  (assert-equal test
+                &0
+                (SubprocessRes.exit-code &(Subprocess.cmd (SubprocessOptions.pss) &[@"echo" @"ok"]))
+                "finishes with open pipe"))
+
+  ; (assert-equal test
+  ;               ; &(SubprocessRes (Just @"wow\n") (Nothing) 0)
+  ;               &(SubprocessRes (Nothing) (Nothing) 0)
+  ;               &(let [echo (Subprocess.call (SubprocessOptions.sps) &[@"echo" @"wow"])
+  ;                      out-pipe (Maybe.unsafe-from @(Subprocess.out &echo))]
+  ;                 (Subprocess.cmd (SubprocessOptions (SubprocessInMode.PipeIn out-pipe) (SubprocessOutMode.Pipe) (SubprocessErrMode.Std)) &[@"cat"]))
+  ;               "finishes with open pipe"))

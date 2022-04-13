@@ -1,18 +1,43 @@
 (load "./subprocess.carp")
 
+; (add-cflag "-Wall -Wextra -ferror-limit=300")
+
 (defn-do main []
   ; Prints all to stdout/stderr
-  (ignore (Subprocess.cmd (zero) &[@"echo" @"subprocess"]))
-
+  ; (ignore (Subprocess.cmd (zero) &[@"echo" @"subprocess"]))
+  ; 
   ; Saves stdout and stderr as strings
-  (let-do [res (Subprocess.cmd (SubprocessOptions.pipe)
+  (let-do [res (Subprocess.cmd (SubprocessOptions.spp)
                                &[@"sh" @"-c" @"printf 'this is stderr' 1>&2; printf 'this is stdout'; exit 42"])]
     (println* "out       >>> " (Maybe.unsafe-from @(SubprocessRes.out &res)))
     (println* "err       >>> " (Maybe.unsafe-from @(SubprocessRes.err &res)))
     (println* "exit-code >>> " (SubprocessRes.exit-code &res)))
+  (println* "after")
 
-  ; Combines stdout and stderr as string
-  (let-do [res (Subprocess.cmd (SubprocessOptions.pipe-combine)
-                               &[@"sh" @"-c" @"printf 'this is stderr' 1>&2; printf 'this is stdout'"])]
-    (println* "combined  >>> " (Maybe.unsafe-from @(SubprocessRes.out &res)))
+  ; ; Combines stdout and stderr as string
+  ; (let-do [res (Subprocess.cmd (SubprocessOptions.spo)
+  ;                              &[@"sh" @"-c" @"printf 'this is stderr' 1>&2; printf 'this is stdout'"])]
+  ;   (println* "combined  >>> " (Maybe.unsafe-from @(SubprocessRes.out &res)))
+  ;   (println* "exit-code >>> " (SubprocessRes.exit-code &res)))
+
+  ; (let [echo (Subprocess.call (SubprocessOptions.sps) &[@"echo" @"are"])
+  ;       out-pipe (Maybe.unsafe-from @(Subprocess.out &echo))]
+  ;   (ignore (Subprocess.cmd (SubprocessOptions (SubprocessInMode.PipeIn out-pipe) (SubprocessOutMode.Std) (SubprocessErrMode.Std))
+  ;                           &[@"awk" @"{print \"you>\" $0 \"<surrounded\"}"])))
+  ; (println* "after pipe")
+  ; (let [echo (Subprocess.call (SubprocessOptions.sps) &[@"sh" @"-c" @"echo are"])
+  ;       out-pipe (Maybe.unsafe-from @(Subprocess.out &echo))]
+  ;   (ignore (Subprocess.cmd (SubprocessOptions (SubprocessInMode.PipeIn out-pipe) (SubprocessOutMode.Std) (SubprocessErrMode.Std))
+  ;                           &[@"awk" @"{print \"you>\" $0 \"<surrounded\"}"])))
+  ;                           ; &[@"sh" @"-c" @"echo wow"])))
+  ; (let [echo (Subprocess.call (SubprocessOptions.sps) &[@"bash" @"-c" @"echo are;echo two; exec 2<&-"])
+  ;       out-pipe (Maybe.unsafe-from @(Subprocess.out &echo))]
+  ;       ; _1 (Subprocess.ccc &out-pipe)]
+  ;   (ignore (Subprocess.cmd (SubprocessOptions (SubprocessInMode.PipeIn out-pipe) (SubprocessOutMode.Std) (SubprocessErrMode.Std))
+  ;                           &[@"awk" @"{print \"you>\" $0 \"<surrounded\"}"])))
+  ;                           ; &[@"sh" @"-c" @"echo wow"])))
+
+  (let-do [res (Subprocess.collect (Subprocess.pipe &[[@"echo" @"are"]
+                                                      [@"awk" @"{print \"you>\" $0 \"<surrounded\"}"]
+                                                      [@"tr" @"<>" @"><"]]))]
     (println* "exit-code >>> " (SubprocessRes.exit-code &res))))
