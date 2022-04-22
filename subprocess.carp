@@ -176,6 +176,7 @@
           (match-ref (Subprocess.err &subp)
             (Just pipe)
             (do
+              ; TODO: check for EAGAIN | EWOULDBLOCK | EINTR + other non resumable errors
               (set! err-byte-read (read (SubprocessPipe.output pipe)
                                         (Pointer.address &err-current-char)
                                         buff-size))
