@@ -11,11 +11,14 @@
   (register copy (Fn [(Ref SubprocessPipe)] SubprocessPipe) "CarpSubprocess_PipeCopy")
   (implements copy copy)
 
-  (defn str [p] (do (ignore (the (Ref SubprocessPipe) p)) @"SubprocessPipe"))
+  (sig str (Fn [(Ref SubprocessPipe)] String))
+  (defn str [p]  @"(SubprocessPipe")
   (implements str str)
-  (defn ref-prn [p] (do (ignore (the (Ref SubprocessPipe) p)) @"SubprocessPipe"))
+  (sig ref-prn (Fn [(Ref SubprocessPipe)] String))
+  (defn ref-prn [p] @"(SubprocessPipe)")
   (implements prn ref-prn)
-  (defn prn [p] (do (ignore (the SubprocessPipe p)) @"SubprocessPipe"))
+  (sig prn (Fn [SubprocessPipe] String))
+  (defn prn [p] @"(SubprocessPipe)")
   (implements prn prn))
 
 (deftype SubprocessInMode  Std Pipe (PipeIn [SubprocessPipe]))
@@ -25,6 +28,7 @@
 (defmodule SubprocessOptions
   (doc  sss "Sets options to the following: in = Std, out = Std, err = Std")
   (defn sss [] (SubprocessOptions (SubprocessInMode.Std) (SubprocessOutMode.Std) (SubprocessErrMode.Std)))
+  (implements zero sss)
   (doc  spo "Sets options to the following: in = Std, out = Pipe, err = Out")
   (defn spo [] (SubprocessOptions (SubprocessInMode.Std) (SubprocessOutMode.Pipe) (SubprocessErrMode.Out)))
   (doc  spp "Sets options to the following: in = Std, out = Pipe, err = Pipe")
@@ -36,10 +40,7 @@
   (doc  iss "Sets options to the following: in = PipeIn, out = Std, err = Std")
   (defn iss [p] (SubprocessOptions (SubprocessInMode.PipeIn p) (SubprocessOutMode.Std) (SubprocessErrMode.Std)))
   (doc  ips "Sets options to the following: in = PipeIn, out = Pipe, err = Std")
-  (defn ips [p] (SubprocessOptions (SubprocessInMode.PipeIn p) (SubprocessOutMode.Pipe) (SubprocessErrMode.Std)))
-
-  (defn zero [] (sss))
-  (implements zero zero))
+  (defn ips [p] (SubprocessOptions (SubprocessInMode.PipeIn p) (SubprocessOutMode.Pipe) (SubprocessErrMode.Std))))
 
 (deftype SubprocessRes [out (Maybe String) err (Maybe String) exit-code Int])
 (derive SubprocessRes =)
@@ -68,37 +69,38 @@
      (match-ref (SubprocessOptions.in options)
        Pipe
        (do (close (SubprocessPipe.output in-pipe))
-           (ignore (dup2 (SubprocessPipe.input in-pipe) 0))
+           (assert (/= -1 (dup2 (SubprocessPipe.input in-pipe) 0)))
            (close (SubprocessPipe.input in-pipe)))
        (PipeIn p)
        (do (close (SubprocessPipe.input p))
-           (ignore (dup2 (SubprocessPipe.output p) 0))
+           (assert (/= -1 (dup2 (SubprocessPipe.output p) 0)))
            (close (SubprocessPipe.output p)))
        _ ())
 
      (match-ref (SubprocessOptions.out options)
        Pipe
        (do (close (SubprocessPipe.output out-pipe))
-           (ignore (dup2 (SubprocessPipe.input out-pipe) 1))
+           (assert (/= -1 (dup2 (SubprocessPipe.input out-pipe) 1)))
            (close (SubprocessPipe.output out-pipe)))
        _ ())
 
      (match-ref (SubprocessOptions.err options)
        Pipe
        (do (close (SubprocessPipe.output err-pipe))
-           (ignore (dup2 (SubprocessPipe.input err-pipe) 2))
+           (assert (/= -1 (dup2 (SubprocessPipe.input err-pipe) 2)))
            (close (SubprocessPipe.input err-pipe)))
        Out
        (match-ref (SubprocessOptions.out options)
-         Pipe (ignore (dup2 (SubprocessPipe.input out-pipe) 2))
-         Std  (ignore (dup2 1 2)))
+         Pipe (assert (/= -1 (dup2 (SubprocessPipe.input out-pipe) 2)))
+         Std  (assert (/= -1 (dup2 1 2))))
        _ ())
 
      ; Not sure having a silent fallback is a good idea...
      (if (> (Array.length args) 1) ; Array already has NULL in it when empty
-       (ignore (execvp (Array.unsafe-nth-value args 0) (Array.unsafe-raw args)))
-       (let [true-args $[(cstr "true") NULL]]
-         (ignore (execvp (StaticArray.unsafe-nth-value true-args 0) (StaticArray.unsafe-raw true-args)))))
+       (assert (/= -1 (execvp (Array.unsafe-nth-value args 0) (Array.unsafe-raw args))))
+       (let [true-args $[(cstr "true") NULL]
+             exec-res  (execvp (StaticArray.unsafe-nth-value true-args 0) (StaticArray.unsafe-raw true-args))]
+          (assert (/= exec-res -1))))
 
      (exit 1))) ; Should not be reached
 
@@ -109,11 +111,13 @@
             _          (Nothing))
           maybe-out-pipe
           (match-ref (SubprocessOptions.out options)
-            Pipe (do (close (SubprocessPipe.input &out-pipe)) (Just out-pipe))
+            Pipe (do (close (SubprocessPipe.input &out-pipe))
+                     (Just out-pipe))
             _    (Nothing))
           maybe-err-pipe
           (match-ref (SubprocessOptions.err options)
-            Pipe (Just err-pipe)
+            Pipe (do (close (SubprocessPipe.input &err-pipe))
+                     (Just err-pipe))
             Out  (Nothing)
             _    (Nothing))]
       (init maybe-in-pipe maybe-out-pipe maybe-err-pipe pid)))
@@ -153,14 +157,6 @@
              out-byte-read 0
              err-byte-read 0
              status -1]
-
-      (match-ref (Subprocess.out &subp)
-        (Just pipe) (close (SubprocessPipe.input pipe))
-        _ ())
-
-      (match-ref (Subprocess.err &subp)
-        (Just pipe) (close (SubprocessPipe.input pipe))
-        _ ())
 
       (while-do (or out-continue err-continue)
 

@@ -17,6 +17,9 @@
      (Subprocess.cmd (SubprocessOptions.spo)
                      &[@"printf" (String.repeat 10000 "wow")]))
 
+(def finishes-with-open-pipe
+     (Subprocess.cmd (SubprocessOptions.pss) &[@"echo" @"finishes with open pipe"]))
+
 (deftest test
   (assert-equal test
                 &(Just @"this is stdout\n")
@@ -72,7 +75,7 @@
 
   (assert-equal test
                 &0
-                (SubprocessRes.exit-code &(Subprocess.cmd (SubprocessOptions.pss) &[@"echo" @"standard output test"]))
+                (SubprocessRes.exit-code &finishes-with-open-pipe)
                 "finishes with open pipe")
 
   (assert-equal test

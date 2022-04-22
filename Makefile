@@ -3,7 +3,7 @@ all: test build build-example
 
 .PHONY=test
 test:
-	carp -x test.carp
+	MallocNanoZone=0 carp -x tests.carp
 
 .PHONY=build
 build:
